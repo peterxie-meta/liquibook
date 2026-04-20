@@ -5,6 +5,7 @@
 
 #include "order_book.h"
 #include "depth.h"
+#include <algorithm>
 #include "bbo_listener.h"
 #include "depth_listener.h"
 
@@ -96,17 +97,18 @@ DepthOrderBook<OrderPtr, SIZE>::on_accept(const OrderPtr& order, Quantity quanti
   {
     // If the order is completely filled on acceptance, do not modify 
     // depth unnecessarily
-    if (quantity == order->order_qty()) 
+    Quantity display_qty = order->order_qty();
+    if(order->visible_qty() > 0 && order->visible_qty() < order->order_qty()) {
+      display_qty = order->visible_qty();
+    }
+    if (quantity == order->order_qty())
     {
-      // Don't tell depth about this order - it's going away immediately.
-      // Instead tell Depth about future fills to ignore
-      depth_.ignore_fill_qty(quantity, order->is_buy());
-    } 
-    else 
+      depth_.ignore_fill_qty(display_qty, order->is_buy());
+    }
+    else
     {
-      // Add to bid or ask depth
-      depth_.add_order(order->price(), 
-        order->order_qty(), 
+      depth_.add_order(order->price(),
+        display_qty,
         order->is_buy());
     }
   }
@@ -122,8 +124,11 @@ template <class OrderPtr, int SIZE>
 void 
 DepthOrderBook<OrderPtr, SIZE>::on_trigger_stop(const OrderPtr& order)
 {
-  // Add to depth
-  depth_.add_order(order->price(), order->order_qty(), order->is_buy());
+  Quantity display_qty = order->order_qty();
+  if(order->visible_qty() > 0 && order->visible_qty() < order->order_qty()) {
+    display_qty = order->visible_qty();
+  }
+  depth_.add_order(order->price(), display_qty, order->is_buy());
 }
 
 template <class OrderPtr, int SIZE> 
@@ -137,19 +142,56 @@ DepthOrderBook<OrderPtr, SIZE>::on_fill(const OrderPtr& order,
 {
   // If the matched order is a limit order
   if (matched_order->is_limit()) {
-    // Inform the depth
-    depth_.fill_order(matched_order->price(), 
-      quantity,
-      matched_order_filled,
-      matched_order->is_buy());
+    bool matched_is_iceberg = matched_order->visible_qty() > 0
+                           && matched_order->visible_qty() < matched_order->order_qty();
+    if(matched_is_iceberg) {
+      Quantity vis = matched_order->visible_qty();
+      Quantity filled_before = matched_order->filled_qty();
+      Quantity filled_after = filled_before + quantity;
+      // How much of the current depth tip is consumed by this fill
+      Quantity tip_before = filled_before % vis;
+      Quantity tip_fill = (std::min)(quantity, vis - tip_before);
+      // Did this fill cross a tip boundary?
+      bool tip_crossed = (filled_after / vis) > (filled_before / vis)
+                      || (filled_after == matched_order->order_qty());
+      depth_.fill_order(matched_order->price(),
+        tip_fill,
+        matched_order_filled,
+        matched_order->is_buy());
+      if(!matched_order_filled && tip_crossed) {
+        Quantity remaining = matched_order->order_qty() - filled_after;
+        Quantity next_tip = (std::min)(vis, remaining);
+        depth_.change_qty_order(matched_order->price(), next_tip, matched_order->is_buy());
+      }
+    } else {
+      depth_.fill_order(matched_order->price(),
+        quantity,
+        matched_order_filled,
+        matched_order->is_buy());
+    }
   }
   // If the inbound order is a limit order
   if (order->is_limit()) {
-    // Inform the depth
-    depth_.fill_order(order->price(), 
-      quantity,
-      inbound_order_filled,
-      order->is_buy());
+    bool inbound_is_iceberg = order->visible_qty() > 0
+                           && order->visible_qty() < order->order_qty();
+    if(inbound_is_iceberg) {
+      Quantity depth_fill = (std::min)(quantity, order->visible_qty());
+      depth_.fill_order(order->price(),
+        depth_fill,
+        inbound_order_filled,
+        order->is_buy());
+      if(!inbound_order_filled && order->open_qty() > 0) {
+        Quantity total_filled = order->filled_qty() + quantity;
+        Quantity remaining = order->order_qty() - total_filled;
+        Quantity next_tip = (std::min)(order->visible_qty(), remaining);
+        depth_.change_qty_order(order->price(), next_tip, order->is_buy());
+      }
+    } else {
+      depth_.fill_order(order->price(),
+        quantity,
+        inbound_order_filled,
+        order->is_buy());
+    }
   }
 }
 
@@ -159,9 +201,27 @@ DepthOrderBook<OrderPtr, SIZE>::on_cancel(const OrderPtr& order, Quantity quanti
 {
   // If the order is a limit order
   if (order->is_limit()) {
-    // If the close erases a level
-    depth_.close_order(order->price(), 
-      quantity, 
+    Quantity depth_qty = quantity;
+    if(order->visible_qty() > 0 && order->visible_qty() < order->order_qty()) {
+      // For icebergs, only the current visible tip is tracked in depth
+      // quantity here is the open_qty from the tracker which includes hidden
+      // We need to figure out what's actually showing in depth
+      Quantity filled = order->order_qty() - quantity;
+      Quantity remaining_total = quantity;
+      // Current tip showing = min(visible_qty, remaining_total)
+      // But we need to account for partial tip consumption
+      Quantity full_tips_consumed = filled / order->visible_qty();
+      Quantity partial_consumed = filled % order->visible_qty();
+      Quantity current_tip;
+      if(partial_consumed > 0) {
+        current_tip = order->visible_qty() - partial_consumed;
+      } else {
+        current_tip = (std::min)(order->visible_qty(), remaining_total);
+      }
+      depth_qty = current_tip;
+    }
+    depth_.close_order(order->price(),
+      depth_qty,
       order->is_buy());
   }
 }

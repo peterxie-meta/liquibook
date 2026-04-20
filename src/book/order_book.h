@@ -705,6 +705,27 @@ OrderBook<OrderPtr>::add_order(Tracker& inbound, Price order_price)
     matched = match_order(inbound, order_price, bids_, deferred_aons);
   }
 
+  // Re-queue any resting icebergs whose tips were consumed during matching
+  if(matched) {
+    TrackerMap& matched_side = order->is_buy() ? asks_ : bids_;
+    bool matched_is_buy = !order->is_buy();
+    std::vector<std::pair<ComparablePrice, Tracker>> to_requeue;
+    for(auto it = matched_side.begin(); it != matched_side.end(); ) {
+      if(it->second.tip_consumed()) {
+        it->second.replenish();
+        to_requeue.push_back(std::make_pair(
+          ComparablePrice(matched_is_buy, it->second.ptr()->price()),
+          it->second));
+        it = matched_side.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    for(auto& entry : to_requeue) {
+      matched_side.insert(entry);
+    }
+  }
+
   // If order has remaining open quantity and is not immediate or cancel
   if (inbound.open_qty() && !inbound.immediate_or_cancel()) {
     // If this is a buy order
@@ -829,7 +850,7 @@ OrderBook<OrderPtr>::match_regular_order(Tracker& inbound,
         deferred_aons.push_back(entry);
       }
     }
-    else 
+    else
     {
       // neither are AON
       Quantity traded = create_trade(inbound, current_order);
@@ -1044,9 +1065,9 @@ OrderBook<OrderPtr>::create_trade(Tracker& inbound_tracker,
     // No price available for this order
     return 0;
   }
-  Quantity fill_qty = 
+  Quantity fill_qty =
     (std::min)(maxQuantity,
-    (std::min)(inbound_tracker.open_qty(), 
+    (std::min)(inbound_tracker.open_qty(),
                current_tracker.open_qty()));
   if(fill_qty > 0)
   {

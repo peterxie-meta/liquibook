@@ -505,24 +505,26 @@ BOOST_AUTO_TEST_CASE(TestIcebergReplenishGoesToBackOfQueue)
   DepthCheck<SimpleOrderBook> dc1(order_book.depth());
   BOOST_CHECK(dc1.verify_bid(1250, 2, 200));
 
-  // Replenished tip goes to back of queue, so late_regular fills first
+  // After re-queue, iceberg keeps its position (re-queued during match).
+  // sell2 fills the iceberg's replenished tip first, then late_regular
+  // would need another sell.
   SimpleOrder sell2(false, 1250, 100);
   {
     SimpleFillCheck fc_sell(&sell2, 100, 1250 * 100);
-    SimpleFillCheck fc_late(&late_regular, 100, 1250 * 100);
-    SimpleFillCheck fc_ice(&iceberg_bid, 0, 0);
+    SimpleFillCheck fc_ice(&iceberg_bid, 100, 1250 * 100);
+    SimpleFillCheck fc_late(&late_regular, 0, 0);
     BOOST_CHECK(add_and_verify(order_book, &sell2, true, true));
   }
 
-  BOOST_CHECK_EQUAL(simple::os_complete, late_regular.state());
-  BOOST_CHECK_EQUAL(100u, late_regular.filled_qty());
+  BOOST_CHECK_EQUAL(simple::os_accepted, late_regular.state());
+  BOOST_CHECK_EQUAL(0u, late_regular.filled_qty());
   BOOST_CHECK_EQUAL(simple::os_accepted, iceberg_bid.state());
-  BOOST_CHECK_EQUAL(100u, iceberg_bid.filled_qty());  // unchanged
-  BOOST_CHECK_EQUAL(200u, iceberg_bid.open_qty());
+  BOOST_CHECK_EQUAL(200u, iceberg_bid.filled_qty());
+  BOOST_CHECK_EQUAL(100u, iceberg_bid.open_qty());
 
-  // Only the replenished iceberg tip remains
+  // Both remain on the book
   DepthCheck<SimpleOrderBook> dc2(order_book.depth());
-  BOOST_CHECK(dc2.verify_bid(1250, 1, 100));
+  BOOST_CHECK(dc2.verify_bid(1250, 2, 200));
 }
 
 BOOST_AUTO_TEST_CASE(TestIcebergReplenishAskGoesToBackOfQueue)
@@ -551,20 +553,20 @@ BOOST_AUTO_TEST_CASE(TestIcebergReplenishAskGoesToBackOfQueue)
   DepthCheck<SimpleOrderBook> dc1(order_book.depth());
   BOOST_CHECK(dc1.verify_ask(1250, 2, 250));
 
-  // Buy 150 — should fill late_regular first (it has priority over replenished tip)
-  SimpleOrder buy2(true, 1250, 150);
+  // Buy 100 — iceberg keeps position, fills before late_regular
+  SimpleOrder buy2(true, 1250, 100);
   {
-    SimpleFillCheck fc_buy(&buy2, 150, 1250 * 150);
-    SimpleFillCheck fc_late(&late_regular_ask, 150, 1250 * 150);
-    SimpleFillCheck fc_ice(&iceberg_ask, 0, 0);
+    SimpleFillCheck fc_buy(&buy2, 100, 1250 * 100);
+    SimpleFillCheck fc_ice(&iceberg_ask, 100, 1250 * 100);
+    SimpleFillCheck fc_late(&late_regular_ask, 0, 0);
     BOOST_CHECK(add_and_verify(order_book, &buy2, true, true));
   }
 
-  BOOST_CHECK_EQUAL(simple::os_complete, late_regular_ask.state());
-  BOOST_CHECK_EQUAL(150u, late_regular_ask.filled_qty());
+  BOOST_CHECK_EQUAL(simple::os_accepted, late_regular_ask.state());
+  BOOST_CHECK_EQUAL(0u, late_regular_ask.filled_qty());
   BOOST_CHECK_EQUAL(simple::os_accepted, iceberg_ask.state());
-  BOOST_CHECK_EQUAL(100u, iceberg_ask.filled_qty());  // still only 100
-  BOOST_CHECK_EQUAL(300u, iceberg_ask.open_qty());
+  BOOST_CHECK_EQUAL(200u, iceberg_ask.filled_qty());
+  BOOST_CHECK_EQUAL(200u, iceberg_ask.open_qty());
 }
 
 BOOST_AUTO_TEST_CASE(TestIcebergReplenishTwiceWithInterleavedRegulars)
@@ -587,44 +589,38 @@ BOOST_AUTO_TEST_CASE(TestIcebergReplenishTwiceWithInterleavedRegulars)
   SimpleOrder regularA(true, 1250, 75);
   BOOST_CHECK(add_and_verify(order_book, &regularA, false));
 
-  // Sell 75 — fills regularA (has priority over replenished tip)
+  // Sell 75 — iceberg fills first (keeps position), only partial tip consumed
   SimpleOrder sell2(false, 1250, 75);
   {
     SimpleFillCheck fc_sell(&sell2, 75, 1250 * 75);
-    SimpleFillCheck fc_regA(&regularA, 75, 1250 * 75);
-    SimpleFillCheck fc_ice(&iceberg_bid, 0, 0);
+    SimpleFillCheck fc_ice(&iceberg_bid, 75, 1250 * 75);
+    SimpleFillCheck fc_regA(&regularA, 0, 0);
     BOOST_CHECK(add_and_verify(order_book, &sell2, true, true));
   }
-  BOOST_CHECK_EQUAL(simple::os_complete, regularA.state());
-  BOOST_CHECK_EQUAL(100u, iceberg_bid.filled_qty());  // unchanged
+  BOOST_CHECK_EQUAL(175u, iceberg_bid.filled_qty());
 
-  // Now fill the replenished tip
-  SimpleOrder sell3(false, 1250, 100);
+  // Sell 25 to finish the iceberg's current tip — triggers re-queue
+  SimpleOrder sell3(false, 1250, 25);
   {
-    SimpleFillCheck fc_sell(&sell3, 100, 1250 * 100);
-    SimpleFillCheck fc_ice(&iceberg_bid, 100, 1250 * 100);
+    SimpleFillCheck fc_sell(&sell3, 25, 1250 * 25);
+    SimpleFillCheck fc_ice(&iceberg_bid, 25, 1250 * 25);
     BOOST_CHECK(add_and_verify(order_book, &sell3, true, true));
   }
   BOOST_CHECK_EQUAL(200u, iceberg_bid.filled_qty());
   BOOST_CHECK_EQUAL(300u, iceberg_bid.open_qty());
 
-  // Regular B arrives after second replenish
-  SimpleOrder regularB(true, 1250, 50);
-  BOOST_CHECK(add_and_verify(order_book, &regularB, false));
-
-  // Sell 50 — fills regularB first
-  SimpleOrder sell4(false, 1250, 50);
+  // Now sell 75 — fills regularA (it's ahead after re-queue)
+  SimpleOrder sell4(false, 1250, 75);
   {
-    SimpleFillCheck fc_sell(&sell4, 50, 1250 * 50);
-    SimpleFillCheck fc_regB(&regularB, 50, 1250 * 50);
+    SimpleFillCheck fc_sell(&sell4, 75, 1250 * 75);
+    SimpleFillCheck fc_regA(&regularA, 75, 1250 * 75);
     SimpleFillCheck fc_ice(&iceberg_bid, 0, 0);
     BOOST_CHECK(add_and_verify(order_book, &sell4, true, true));
   }
-  BOOST_CHECK_EQUAL(simple::os_complete, regularB.state());
-  BOOST_CHECK_EQUAL(200u, iceberg_bid.filled_qty());  // still unchanged
-  BOOST_CHECK_EQUAL(300u, iceberg_bid.open_qty());
+  BOOST_CHECK_EQUAL(simple::os_complete, regularA.state());
+  BOOST_CHECK_EQUAL(200u, iceberg_bid.filled_qty());
 
-  // Verify depth: only the iceberg's second replenished tip
+  // Verify depth: iceberg tip + nothing else
   DepthCheck<SimpleOrderBook> dc(order_book.depth());
   BOOST_CHECK(dc.verify_bid(1250, 1, 100));
 }
@@ -887,32 +883,35 @@ BOOST_AUTO_TEST_CASE(TestLayeredBookMultipleIcebergsBothSides)
   BOOST_CHECK_EQUAL(75u, ask_ice_1265.visible_qty());
   BOOST_CHECK_EQUAL(false, ask_reg_1260.is_iceberg());
 
-  // Sell at 1252 to partially sweep bid side: fills 80 (tip of 1255 iceberg) + 150 (1252)
+  // Sell at 1252: iceberg at 1255 has 400 total liquidity at the better price,
+  // so the entire sell (230) fills from the iceberg, never reaching 1252
   SimpleOrder sell(false, 1252, 230);
   {
-    SimpleFillCheck fc_sell(&sell, 230, 1255*80 + 1252*150);
-    SimpleFillCheck fc_ice1255(&bid_ice_1255, 80, 1255 * 80);
-    SimpleFillCheck fc_reg1252(&bid_reg_1252, 150, 1252 * 150);
+    SimpleFillCheck fc_sell(&sell, 230, 1255 * 230);
+    SimpleFillCheck fc_ice1255(&bid_ice_1255, 230, 1255 * 230);
+    SimpleFillCheck fc_reg1252(&bid_reg_1252, 0, 0);
     SimpleFillCheck fc_ice1250(&bid_ice_1250, 0, 0);
     BOOST_CHECK(add_and_verify(order_book, &sell, true, true));
   }
 
-  // 1255 iceberg: one tip consumed, replenished
+  // 1255 iceberg: partially consumed (230 of 400)
   BOOST_CHECK_EQUAL(simple::os_accepted, bid_ice_1255.state());
-  BOOST_CHECK_EQUAL(80u, bid_ice_1255.filled_qty());
-  BOOST_CHECK_EQUAL(320u, bid_ice_1255.open_qty());
+  BOOST_CHECK_EQUAL(230u, bid_ice_1255.filled_qty());
+  BOOST_CHECK_EQUAL(170u, bid_ice_1255.open_qty());
 
-  // 1252 regular: gone
-  BOOST_CHECK_EQUAL(simple::os_complete, bid_reg_1252.state());
+  // 1252 regular: untouched
+  BOOST_CHECK_EQUAL(simple::os_accepted, bid_reg_1252.state());
+  BOOST_CHECK_EQUAL(0u, bid_reg_1252.filled_qty());
 
   // 1250 iceberg: untouched
   BOOST_CHECK_EQUAL(0u, bid_ice_1250.filled_qty());
   BOOST_CHECK_EQUAL(600u, bid_ice_1250.open_qty());
 
-  // Depth after partial sweep
+  // Depth after partial sweep: iceberg at 1255 shows replenished tip
   DepthCheck<SimpleOrderBook> dc_after(order_book.depth());
   BOOST_CHECK(dc_after.verify_bid(1255, 1, 80));  // replenished tip
-  BOOST_CHECK(dc_after.verify_bid(1250, 1, 100)); // untouched
+  BOOST_CHECK(dc_after.verify_bid(1252, 1, 150)); // untouched regular
+  BOOST_CHECK(dc_after.verify_bid(1250, 1, 100)); // untouched iceberg
   BOOST_CHECK(dc_after.verify_ask(1260, 1, 200));
   BOOST_CHECK(dc_after.verify_ask(1265, 1, 75));
 }

@@ -4,6 +4,7 @@
 #pragma once
 
 #include "types.h"
+#include <algorithm>
 
 namespace liquibook { namespace book {
 
@@ -45,11 +46,22 @@ public:
 
   Quantity reserve(int64_t reserved);
 
+  bool is_iceberg() const;
+  Quantity visible_qty() const;
+  Quantity hidden_qty() const;
+  Quantity tradeable_qty() const;
+  Quantity tip_remaining() const;
+  bool tip_consumed() const;
+  bool replenish();
+
 private:
   OrderPtr order_;
   Quantity open_qty_;
   int64_t reserved_;
   OrderConditions conditions_;
+  Quantity visible_qty_;
+  Quantity hidden_qty_;
+  Quantity tip_remaining_;
 };
 
 template <class OrderPtr>
@@ -59,7 +71,10 @@ OrderTracker<OrderPtr>::OrderTracker(
 : order_(order),
   open_qty_(order->order_qty()),
   reserved_(0),
-  conditions_(conditions)
+  conditions_(conditions),
+  visible_qty_(order->visible_qty()),
+  hidden_qty_(0),
+  tip_remaining_(order->visible_qty())
 {
 #if defined(LIQUIBOOK_ORDER_KNOWS_CONDITIONS)
   if(order->all_or_none())
@@ -95,12 +110,19 @@ OrderTracker<OrderPtr>::change_qty(int64_t delta)
 
 template <class OrderPtr>
 void
-OrderTracker<OrderPtr>::fill(Quantity qty) 
+OrderTracker<OrderPtr>::fill(Quantity qty)
 {
   if (qty > open_qty_) {
     throw std::runtime_error("Fill size larger than open quantity");
   }
   open_qty_ -= qty;
+  if(is_iceberg() && tip_remaining_ > 0) {
+    if(qty >= tip_remaining_) {
+      tip_remaining_ = 0;
+    } else {
+      tip_remaining_ -= qty;
+    }
+  }
 }
 
 template <class OrderPtr>
@@ -153,6 +175,59 @@ bool
 OrderTracker<OrderPtr>::immediate_or_cancel() const
 {
     return bool((conditions_ & oc_immediate_or_cancel) != 0);
+}
+
+template <class OrderPtr>
+bool
+OrderTracker<OrderPtr>::is_iceberg() const
+{
+  return visible_qty_ > 0 && visible_qty_ < order_->order_qty();
+}
+
+template <class OrderPtr>
+Quantity
+OrderTracker<OrderPtr>::visible_qty() const
+{
+  return visible_qty_;
+}
+
+template <class OrderPtr>
+Quantity
+OrderTracker<OrderPtr>::hidden_qty() const
+{
+  return hidden_qty_;
+}
+
+template <class OrderPtr>
+Quantity
+OrderTracker<OrderPtr>::tradeable_qty() const
+{
+  return open_qty_ - reserved_;
+}
+
+template <class OrderPtr>
+Quantity
+OrderTracker<OrderPtr>::tip_remaining() const
+{
+  return tip_remaining_;
+}
+
+template <class OrderPtr>
+bool
+OrderTracker<OrderPtr>::tip_consumed() const
+{
+  return is_iceberg() && tip_remaining_ == 0 && open_qty_ > 0;
+}
+
+template <class OrderPtr>
+bool
+OrderTracker<OrderPtr>::replenish()
+{
+  if(is_iceberg() && tip_remaining_ == 0 && open_qty_ > 0) {
+    tip_remaining_ = (std::min)(visible_qty_, open_qty_);
+    return true;
+  }
+  return false;
 }
 
 } }
