@@ -24,7 +24,8 @@ public:
               book::Price price,
               book::Quantity qty,
               book::Price stop_price = 0,
-              book::OrderConditions conditions = book::OrderCondition::oc_no_conditions);
+              book::OrderConditions conditions = book::OrderCondition::oc_no_conditions,
+              book::Quantity visible_qty = 0);
 
   /// @brief get the order's state
   const OrderState& state() const;
@@ -69,6 +70,12 @@ public:
   /// orders already on the market, cancel any remaining quantity.
   virtual bool immediate_or_cancel() const;
 
+  /// @brief is this an iceberg order?
+  virtual bool is_iceberg() const;
+
+  /// @brief get the visible (tip) quantity for iceberg orders
+  virtual book::Quantity visible_qty() const;
+
   /// @brief exchange accepted this order
   void accept();
   /// @brief exchange cancelled this order
@@ -88,6 +95,7 @@ private:
   book::OrderConditions conditions_;
   book::Quantity filled_qty_;
   book::Cost filled_cost_;
+  book::Quantity visible_qty_;
   static uint32_t last_order_id_;
 
 public:

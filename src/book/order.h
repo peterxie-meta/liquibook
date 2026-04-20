@@ -36,6 +36,13 @@ public:
   /// @brief After generating as many trades as possible against
   /// orders already on the market, cancel any remaining quantity.
   virtual bool immediate_or_cancel() const;
+
+  /// @brief is this an iceberg order?
+  virtual bool is_iceberg() const;
+
+  /// @brief get the visible (tip) quantity for this order.
+  /// For non-iceberg orders, returns 0.
+  virtual Quantity visible_qty() const;
 };
 
 inline
@@ -67,6 +74,21 @@ Order::immediate_or_cancel() const
 {
   // default to normal
   return false;
+}
+
+inline
+bool
+Order::is_iceberg() const
+{
+  return visible_qty() > 0 && visible_qty() < order_qty();
+}
+
+inline
+Quantity
+Order::visible_qty() const
+{
+  // default to not an iceberg
+  return 0;
 }
 
 } }

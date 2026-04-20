@@ -14,7 +14,8 @@ SimpleOrder::SimpleOrder(
   book::Price price,
   book::Quantity qty,
   book::Price stop_price,
-  book::OrderConditions conditions)
+  book::OrderConditions conditions,
+  book::Quantity visible_qty)
 : state_(os_new),
   is_buy_(is_buy),
   order_qty_(qty),
@@ -23,6 +24,7 @@ SimpleOrder::SimpleOrder(
   conditions_(conditions),
   filled_qty_(0),
   filled_cost_(0),
+  visible_qty_(visible_qty),
   order_id_(++last_order_id_)
 {
 }
@@ -133,6 +135,18 @@ SimpleOrder::replace(book::Quantity size_delta, book::Price new_price)
     order_qty_ += size_delta;
     price_ = new_price;
   }
+}
+
+bool
+SimpleOrder::is_iceberg() const
+{
+  return visible_qty_ > 0 && visible_qty_ < order_qty_;
+}
+
+book::Quantity
+SimpleOrder::visible_qty() const
+{
+  return visible_qty_;
 }
 
 } }
